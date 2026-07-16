@@ -134,6 +134,7 @@ const ERR_CODES = {
   "4275": {short:"無法合併虛擬機磁碟 (disk consolidation failed)", detail:"NetBackup 在建立快照前、或刪除快照後嘗試合併(consolidate)VM 磁碟失敗。常見於 VM 磁碟有殘留的快照鏈結構複雜或磁碟空間不足。建議至 vCenter 手動執行 Consolidate 後重跑備份。"},
   "4287": {short:"VM 上已存在 NetBackup 建立的快照", detail:"VM 上已有 NBU_SNAPSHOT 或 NBU_RESTORE 開頭的殘留快照，且 policy 設定為偵測到既有快照時直接中止。常見於上次備份的快照未被正確刪除，或兩個 policy 同時對同一台 VM 備份互相衝突。可於 vSphere 手動移除該殘留快照。"},
   "4292": {short:"無法啟用 Change Block Tracking (CBT)", detail:"VM 尚未啟用 CBT 且目前已存在快照(snapshot)，導致 NetBackup 無法在備份時啟用 CBT（vSphere 6.5+ 的已知限制）。需先在 vCenter 手動移除/合併該 VM 的既有快照，再重新執行備份。"},
+  "4726": {short:"無法建立指定 VM 的快照 (CDP/RHV)", detail:"常見於 CDP(Continuous Data Protection) 或 RHV 虛擬化平台環境。建議先確認該 VM 在備份開始前沒有被鎖定(unlocked)，可嘗試手動建立一個臨時快照測試 RHV 平台本身是否正常；若為 CDP 備份，也要確認 CDP Gateway 上的 nbcctd 服務正常運作，並查看 bpfis / nbcctd log 進一步定位。"},
   "4748": {short:"無法取得該虛擬機資訊 (Java console)", detail:"常見於 Nutanix/VM 環境，因憑證(certificate)或虛擬化平台認證設定問題導致 NetBackup 無法讀取 VM 資訊。建議確認 Virtual Machine Servers 認證是否正確、Master/Media Server 憑證是否過期。"},
   "7625": {short:"SSL 交握失敗 (vnetd proxy)", detail:"與遠端主機的 vnetd proxy 無法完成 SSL 交握，常見原因：憑證遺失/過期/被撤銷、主機間時間差過大(clock skew)、cipher 設定不相容。建議檢查憑證狀態與兩端系統時間是否同步。"},
   "7641": {short:"找不到共同的憑證授權根 (CA Root)", detail:"雙方主機找不到共同信任的 CA Root，無法建立安全連線。常見於 Master Server 重灌/災難復原後憑證資訊不一致，或 Client 端 Server list 設定錯誤指向錯誤的 Master。可能需要重新核發憑證(nbcertcmd)或修正 certmapinfo.json 中的 masterHostId。"},
@@ -329,14 +330,21 @@ function analyze(){
     </div>
   `;
 
-  // need-check: policies where last event is Failed (no later success)
+  // need-check: for each Client/Policy group, find the last Failed row *of its own level type*
+  // (Full vs Archived Redo Log Backup etc are different backup purposes and must not be conflated)
   const needCheck = [];
   for(const key in groups){
     const list = groups[key];
-    const last = list[list.length-1];
-    if(isFailLike(last.status)){
-      const anySuccessAfterFail = list.some(r=> isSuccess(r.status));
-      needCheck.push({key, list, last, hasAnySuccess: anySuccessAfterFail});
+    const failRowsAll = list.filter(r=>isFailLike(r.status));
+    if(failRowsAll.length===0) continue;
+    const lastFailOverall = failRowsAll[failRowsAll.length-1];
+    // only compare against rows sharing the same level type as this last failure
+    const sameLevelRows = list.filter(r=>r.level===lastFailOverall.level);
+    const idxInSameLevel = sameLevelRows.indexOf(lastFailOverall);
+    const laterSameLevel = sameLevelRows.slice(idxInSameLevel+1);
+    const hasSameLevelSuccess = laterSameLevel.some(r=>isSuccess(r.status));
+    if(!hasSameLevelSuccess){
+      needCheck.push({key, list, last: lastFailOverall, hasAnySuccess:false});
     }
   }
 
@@ -380,16 +388,18 @@ function analyze(){
       return `<span class="badge-type">Error ${c}${e? "："+e.short:""}</span>`;
     }).join(" ");
 
-    // generic recovery info for non-Snapshot types: show when it next succeeded after last failure
+    // generic recovery info for non-Snapshot types: only compare against the SAME level type
+    // (Full vs Archived Redo Log Backup are different backup purposes, must not cross-match)
     let recoveryHtml = "";
     if(lastFail.jobtype!=="Snapshot"){
-      const lastFailIdx = list.indexOf(lastFail);
-      const afterFail = list.slice(lastFailIdx+1);
-      const nextSuccess = afterFail.find(r=>isSuccess(r.status));
+      const sameLevelRows = list.filter(r=>r.level===lastFail.level);
+      const idxInSameLevel = sameLevelRows.indexOf(lastFail);
+      const nextSuccess = sameLevelRows.slice(idxInSameLevel+1).find(r=>isSuccess(r.status));
+      const levelLabel = lastFail.level || "同類型";
       if(!isUnresolved && nextSuccess){
-        recoveryHtml = `<div class="small" style="margin-top:6px;color:var(--ok);">後續已於 <b>${nextSuccess.startRaw}</b> 恢復成功</div>`;
+        recoveryHtml = `<div class="small" style="margin-top:6px;color:var(--ok);">同為「${levelLabel}」的排程，後續已於 <b>${nextSuccess.startRaw}</b> 恢復成功</div>`;
       } else if(isUnresolved){
-        recoveryHtml = `<div class="small" style="margin-top:6px;color:var(--bad);">此表格範圍內最後一筆仍為失敗，尚未看到後續成功紀錄</div>`;
+        recoveryHtml = `<div class="small" style="margin-top:6px;color:var(--bad);">此表格範圍內，同為「${levelLabel}」的排程尚未看到後續成功紀錄</div>`;
       }
     }
 
