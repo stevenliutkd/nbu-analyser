@@ -55,7 +55,7 @@
 <header>
   <h1>NBU 每日備份回報 分析工具</h1>
   <p>直接從郵件表格 Ctrl+A 複製整段內容，貼到下方即可分析 — 不需要另存 Excel</p>
-  <p style="font-size:14px;opacity:.7;">版本 2026-10-06 18:05（雲端對照表）</p>
+  <p style="font-size:14px;opacity:.7;">版本 2026-10-06 18:30</p>
 </header>
 
 <div class="wrap">
@@ -83,12 +83,12 @@
 
   <div class="card">
     <div class="group-head" onclick="toggleMapCard()" style="cursor:pointer;border-radius:8px;">
-      <span><h2 style="margin:0;">VM UUID 對照表（Nutanix AHV / VMware）<span id="mapArrow">▾</span></h2></span>
+      <span><h2 style="margin:0;">虛擬機UUID對照表整理工具 <span id="mapArrow">▾</span></h2></span>
       <span class="small" id="mapHeadStat"></span>
     </div>
     <div id="mapBody" style="display:none;margin-top:10px;">
       <p class="small">填客戶名稱，把 NBU Web UI「工作負載 → Nutanix AHV → 虛擬機」的清單整段複製貼上，按「複製到試算表」，再到 Google 試算表貼上即可。
-      對照表只存在這台電腦的瀏覽器裡，不會上傳；要給同事用請按「匯出對照檔」再把檔案傳給他匯入。</p>
+      分析時用的對照表一律以 Google 試算表為準，這裡只負責把清單整理成可貼上的格式。</p>
       <div class="row" style="margin-top:0;">
         <input type="text" id="mapCust" list="mapCustList" placeholder="客戶名稱（例如：埔里榮院）">
         <datalist id="mapCustList"></datalist>
@@ -96,9 +96,6 @@
       <textarea id="mapPaste" style="margin-top:10px;height:130px;" placeholder="在此貼上該客戶的 AHV 虛擬機清單..."></textarea>
       <div class="row">
         <button onclick="addAndCopy()">複製到試算表</button>
-        <button class="secondary" onclick="exportMapping()">匯出對照檔 (.json)</button>
-        <button class="secondary" onclick="document.getElementById('mapFile').click()">匯入對照檔</button>
-        <input type="file" id="mapFile" accept=".json,application/json" style="display:none" onchange="importMappingFile(this)">
         <span class="stat" id="mapStat"></span>
       </div>
       <div class="row"><span class="stat" id="sheetStat"></span>
@@ -223,16 +220,12 @@ function esc(v){
 }
 
 function loadMap(){
-  try{
-    const raw = localStorage.getItem(MAP_KEY);
-    if(raw){ const o = JSON.parse(raw); if(o && typeof o==="object") userMap = o; }
-  }catch(e){ userMap = {}; }
+  // 舊版存在瀏覽器裡的本機對照表已停用，清掉避免跟試算表不一致
+  try{ localStorage.removeItem(MAP_KEY); }catch(e){}
+  userMap = {};
   rebuildIndex();
 }
-function saveMap(){
-  try{ localStorage.setItem(MAP_KEY, JSON.stringify(userMap)); return true; }
-  catch(e){ return false; }
-}
+
 let sheetMap = {};     // 從雲端試算表讀到的對照表，格式同 userMap
 const SHEET_CACHE_KEY = "nbuAhvUuidMap.sheetCache.v1";
 
@@ -421,122 +414,48 @@ function parseMappingText(text){
   return out;
 }
 
-function importMapping(){
+// 一鍵：解析貼上的清單 → 複製成「客戶 / 虛擬機名稱 / UUID」三欄，可直接貼進 Google 試算表
+function addAndCopy(){
   const cust = document.getElementById("mapCust").value.trim();
-  const text = document.getElementById("mapPaste").value;
+  const ta = document.getElementById("mapPaste");
   const stat = document.getElementById("mapStat");
+  const prev = document.getElementById("mapPreview");
   if(!cust){ stat.textContent = "請先填客戶名稱"; return; }
-  const found = parseMappingText(text);
+  const found = parseMappingText(ta.value);
   if(found.length===0){
     stat.textContent = "沒有解析到任何「名稱 + UUID」，請確認貼上的內容含有 Nutanix-AHV_ 開頭的 ID";
-    document.getElementById("mapPreview").innerHTML = "";
+    prev.innerHTML = "";
     return;
   }
-  if(!userMap[cust]) userMap[cust] = {};
-  let added=0, updated=0;
-  for(const f of found){
-    if(userMap[cust][f.uuid]===undefined) added++;
-    else if(userMap[cust][f.uuid]!==f.name) updated++;
-    userMap[cust][f.uuid] = f.name;
-  }
-  rebuildIndex();
-  const ok = saveMap();
-  stat.textContent = `${cust}：新增 ${added} 台、更新 ${updated} 台（本次貼上共 ${found.length} 台）` + (ok? "" : "　⚠ 瀏覽器不允許儲存，重新整理後會消失，請先匯出對照檔");
-  document.getElementById("mapPreview").innerHTML = `
-    <h3>本次匯入結果（請抽看名稱是否對得上）</h3>
+  prev.innerHTML = `
+    <h3>本次整理結果（請抽看名稱是否對得上）</h3>
     <div class="table-scroll"><table>
-      <tr><th style="width:40%">VM 名稱</th><th>VM UUID</th></tr>
-      ${found.map(f=>`<tr><td>${esc(f.name)}</td><td style="font-family:Consolas,monospace;font-size:14px;">${esc(f.uuid)}</td></tr>`).join("")}
+      <tr><th style="width:20%">客戶</th><th style="width:35%">虛擬機名稱</th><th>UUID</th></tr>
+      ${found.map(f=>`<tr><td>${esc(cust)}</td><td>${esc(f.name)}</td><td style="font-family:Consolas,monospace;font-size:14px;">${esc(f.uuid)}</td></tr>`).join("")}
     </table></div>`;
-  document.getElementById("mapPaste").value = "";
-  renderMapList();
-  if(lastResult) analyze();
-  return {cust, found};
-}
-
-// 一鍵：解析貼上的清單 → 加入對照表 → 複製成「客戶 / VM名稱 / UUID」三欄，可直接貼進 Google 試算表
-function addAndCopy(){
-  const r = importMapping();
-  if(!r) return;
-  const text = r.found.map(f=>`${r.cust}\t${f.name}\t${f.uuid}`).join("\n");
-  const stat = document.getElementById("mapStat");
-  const done = ()=>{ stat.textContent = `${r.cust}：${r.found.length} 台已複製，到試算表最下面的空白列按 Ctrl+V 貼上`; };
+  const text = found.map(f=>`${cust}\t${f.name}\t${f.uuid}`).join("\n");
+  const done = ()=>{ ta.value = ""; stat.textContent = `${cust}：${found.length} 台已複製，到試算表最下面的空白列按 Ctrl+V 貼上`; };
   const fallback = ()=>{
-    const ta = document.getElementById("mapPaste"); ta.value = text; ta.select();
-    try{ if(!document.execCommand("copy")) throw 0; ta.value = ""; done(); }
+    ta.value = text; ta.select();
+    try{ if(!document.execCommand("copy")) throw 0; done(); }
     catch(e){ stat.textContent = "瀏覽器不允許自動複製，三欄資料已放進上面的框，請全選後自行複製"; }
   };
   if(navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done, fallback);
   else fallback();
 }
 
-function removeCustomer(cust){
-  if(!confirm(`確定要刪除「${cust}」的對照表嗎？`)) return;
-  delete userMap[cust];
-  rebuildIndex(); saveMap(); renderMapList();
-  document.getElementById("mapPreview").innerHTML = "";
-  if(lastResult) analyze();
-}
-
-function exportMapping(){
-  const data = {format:"nbu-ahv-uuid-map", version:1, exported:new Date().toISOString(), customers:userMap};
-  const blob = new Blob([JSON.stringify(data,null,2)], {type:"application/json"});
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = "nbu-ahv-uuid-map.json";
-  document.body.appendChild(a); a.click(); a.remove();
-  setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
-}
-
-function importMappingFile(input){
-  const f = input.files && input.files[0];
-  const stat = document.getElementById("mapStat");
-  if(!f) return;
-  const rd = new FileReader();
-  rd.onload = ()=>{
-    try{
-      const o = JSON.parse(rd.result);
-      const custs = o && o.customers;
-      if(!custs || typeof custs!=="object") throw new Error("格式不符");
-      let n=0;
-      for(const c in custs){
-        if(!userMap[c]) userMap[c] = {};
-        for(const u in custs[c]){
-          if(RE_UUID.test(u) && typeof custs[c][u]==="string"){ userMap[c][u.toLowerCase()] = custs[c][u]; n++; }
-        }
-      }
-      rebuildIndex();
-      const ok = saveMap();
-      stat.textContent = `已匯入對照檔：${Object.keys(custs).length} 個客戶、${n} 台 VM` + (ok? "" : "　⚠ 瀏覽器不允許儲存，重新整理後會消失");
-      renderMapList();
-      if(lastResult) analyze();
-    }catch(e){
-      stat.textContent = "對照檔讀取失敗：這不是本工具匯出的 .json 檔";
-    }
-    input.value = "";
-  };
-  rd.readAsText(f);
-}
-
 function renderMapList(){
-  const custs = Object.keys(userMap).sort();
-  const builtin = Object.keys(BUILTIN_MAP);
+  const src = Object.assign({}, BUILTIN_MAP, sheetMap);
+  const custs = Object.keys(src).sort();
   const total = Object.keys(uuidIndex).length;
   document.getElementById("mapHeadStat").textContent =
-    total ? `已載入 ${new Set([...custs,...builtin,...Object.keys(sheetMap)]).size} 個客戶 / ${total} 台 VM　點擊展開` : "尚未匯入　點擊展開";
+    total ? `試算表已載入 ${custs.length} 個客戶 / ${total} 台 VM　點擊展開` : "點擊展開";
   document.getElementById("mapCustList").innerHTML = custs.map(c=>`<option value="${esc(c)}">`).join("");
-  if(custs.length===0 && builtin.length===0){
-    document.getElementById("mapList").innerHTML = "";
-    return;
-  }
-  const rows = custs.map((c,i)=>`<tr><td>${esc(c)}</td><td>${Object.keys(userMap[c]).length}</td>
-      <td><button class="danger" data-cust="${esc(c)}" onclick="removeCustomer(this.dataset.cust)">刪除</button></td></tr>`).join("")
-    + builtin.map(c=>`<tr><td>${esc(c)} <span class="badge-type">內建</span></td><td>${Object.keys(BUILTIN_MAP[c]).length}</td><td></td></tr>`).join("");
-  document.getElementById("mapList").innerHTML = `
-    <h3>已載入的客戶</h3>
+  document.getElementById("mapList").innerHTML = custs.length===0 ? "" : `
+    <h3>試算表目前的內容</h3>
     <div class="table-scroll"><table>
-      <tr><th>客戶</th><th style="width:140px">VM 數量</th><th style="width:120px"></th></tr>
-      ${rows}
+      <tr><th>客戶</th><th style="width:140px">VM 數量</th></tr>
+      ${custs.map(c=>`<tr><td>${esc(c)}</td><td>${Object.keys(src[c]).length}</td></tr>`).join("")}
     </table></div>`;
 }
 
