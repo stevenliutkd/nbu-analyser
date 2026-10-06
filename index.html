@@ -44,12 +44,17 @@
   h2{font-size:23px;margin:0 0 8px;}
   h3{font-size:20px;margin:12px 0 4px;color:var(--sub);}
   .small{font-size:16px;color:var(--sub);}
+  .cust{font-size:14px;padding:1px 7px;border-radius:4px;background:rgba(91,147,255,.18);color:var(--accent);margin-left:6px;}
+  .uuid{font-family:Consolas,monospace;font-size:13px;color:var(--sub);display:block;word-break:break-all;}
+  input[type=text]{background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:9px 10px;font-size:17px;min-width:240px;}
+  button.danger{background:transparent;color:var(--bad);border:1px solid var(--bad);padding:4px 12px;font-size:15px;}
 </style>
 </head>
 <body>
 
 <header>
   <h1>NBU 每日備份回報 分析工具</h1>
+  <p>直接從郵件表格 Ctrl+A 複製整段內容，貼到下方即可分析 — 不需要另存 Excel</p>
 </header>
 
 <div class="wrap">
@@ -73,6 +78,33 @@
   <div class="card" id="detailCard" style="display:none;">
     <h2>3. 有 Failed 的 Client / Policy 明細（點擊展開）</h2>
     <div id="detailBox"></div>
+  </div>
+
+  <div class="card">
+    <div class="group-head" onclick="toggleMapCard()" style="cursor:pointer;border-radius:8px;">
+      <span><h2 style="margin:0;">VM UUID 對照表（Nutanix AHV / VMware）<span id="mapArrow">▾</span></h2></span>
+      <span class="small" id="mapHeadStat"></span>
+    </div>
+    <div id="mapBody" style="display:none;margin-top:10px;">
+      <p class="small">填客戶名稱，把 NBU Web UI「工作負載 → Nutanix AHV → 虛擬機」的清單整段複製貼上，按「複製到試算表」，再到 Google 試算表貼上即可。
+      對照表只存在這台電腦的瀏覽器裡，不會上傳；要給同事用請按「匯出對照檔」再把檔案傳給他匯入。</p>
+      <div class="row" style="margin-top:0;">
+        <input type="text" id="mapCust" list="mapCustList" placeholder="客戶名稱（例如：埔里榮院）">
+        <datalist id="mapCustList"></datalist>
+      </div>
+      <textarea id="mapPaste" style="margin-top:10px;height:130px;" placeholder="在此貼上該客戶的 AHV 虛擬機清單..."></textarea>
+      <div class="row">
+        <button onclick="addAndCopy()">複製到試算表</button>
+        <button class="secondary" onclick="exportMapping()">匯出對照檔 (.json)</button>
+        <button class="secondary" onclick="document.getElementById('mapFile').click()">匯入對照檔</button>
+        <input type="file" id="mapFile" accept=".json,application/json" style="display:none" onchange="importMappingFile(this)">
+        <span class="stat" id="mapStat"></span>
+      </div>
+      <div class="row"><span class="stat" id="sheetStat"></span>
+        <button class="secondary" id="sheetReload" style="display:none;padding:5px 12px;font-size:15px;" onclick="loadSheet()">重新讀取</button></div>
+      <div id="mapPreview"></div>
+      <div id="mapList"></div>
+    </div>
   </div>
 
   <div class="card">
@@ -134,7 +166,6 @@ const ERR_CODES = {
   "4275": {short:"無法合併虛擬機磁碟 (disk consolidation failed)", detail:"NetBackup 在建立快照前、或刪除快照後嘗試合併(consolidate)VM 磁碟失敗。常見於 VM 磁碟有殘留的快照鏈結構複雜或磁碟空間不足。建議至 vCenter 手動執行 Consolidate 後重跑備份。"},
   "4287": {short:"VM 上已存在 NetBackup 建立的快照", detail:"VM 上已有 NBU_SNAPSHOT 或 NBU_RESTORE 開頭的殘留快照，且 policy 設定為偵測到既有快照時直接中止。常見於上次備份的快照未被正確刪除，或兩個 policy 同時對同一台 VM 備份互相衝突。可於 vSphere 手動移除該殘留快照。"},
   "4292": {short:"無法啟用 Change Block Tracking (CBT)", detail:"VM 尚未啟用 CBT 且目前已存在快照(snapshot)，導致 NetBackup 無法在備份時啟用 CBT（vSphere 6.5+ 的已知限制）。需先在 vCenter 手動移除/合併該 VM 的既有快照，再重新執行備份。"},
-  "4726": {short:"無法建立指定 VM 的快照 (CDP/RHV)", detail:"常見於 CDP(Continuous Data Protection) 或 RHV 虛擬化平台環境。建議先確認該 VM 在備份開始前沒有被鎖定(unlocked)，可嘗試手動建立一個臨時快照測試 RHV 平台本身是否正常；若為 CDP 備份，也要確認 CDP Gateway 上的 nbcctd 服務正常運作，並查看 bpfis / nbcctd log 進一步定位。"},
   "4748": {short:"無法取得該虛擬機資訊 (Java console)", detail:"常見於 Nutanix/VM 環境，因憑證(certificate)或虛擬化平台認證設定問題導致 NetBackup 無法讀取 VM 資訊。建議確認 Virtual Machine Servers 認證是否正確、Master/Media Server 憑證是否過期。"},
   "7625": {short:"SSL 交握失敗 (vnetd proxy)", detail:"與遠端主機的 vnetd proxy 無法完成 SSL 交握，常見原因：憑證遺失/過期/被撤銷、主機間時間差過大(clock skew)、cipher 設定不相容。建議檢查憑證狀態與兩端系統時間是否同步。"},
   "7641": {short:"找不到共同的憑證授權根 (CA Root)", detail:"雙方主機找不到共同信任的 CA Root，無法建立安全連線。常見於 Master Server 重灌/災難復原後憑證資訊不一致，或 Client 端 Server list 設定錯誤指向錯誤的 Master。可能需要重新核發憑證(nbcertcmd)或修正 certmapinfo.json 中的 masterHostId。"},
@@ -161,6 +192,360 @@ function renderErrTable(){
   `;
 }
 renderErrTable();
+
+// ---------- Nutanix AHV UUID 對照表 ----------
+// 若要把對照表直接寫死在檔案裡（僅限放在公司內部、不公開的副本），格式如下：
+//   const BUILTIN_MAP = { "客戶A": { "71ca6464-4121-4537-74e8-1af540743472": "BMR-test" } };
+// 注意：這個頁面若放在公開的 GitHub Pages，寫在這裡的客戶 VM 名稱任何人都看得到。
+const BUILTIN_MAP = {};
+
+// ★ 雲端對照表：把 Google 試算表的連結貼在引號裡（共用設定要是「知道連結的任何人 → 檢視者」）。
+//   表格第一列是標題，欄位為：客戶 | VM名稱 | UUID
+//   之後客戶 VM 改名，只要改試算表，不用動這個檔案。
+const SHEET_URL = "";
+
+const MAP_KEY = "nbuAhvUuidMap.v1";
+const UUID_SRC = "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}";
+const RE_AHV_ID = new RegExp("Nutanix-AHV_(" + UUID_SRC + ")(?:_(" + UUID_SRC + "))?", "i");
+const RE_UUID = new RegExp(UUID_SRC);
+// 以 UUID 當名稱的 client：「<UUID>_prism.xxx」(AHV policy)、「<UUID>」(protection plan)、「Nutanix-AHV_<UUID>_<叢集UUID>」(Web UI)
+const RE_UUID_CLIENT = new RegExp("^(?:Nutanix-AHV_)?(" + UUID_SRC + ")(?:_.*)?$", "i");
+// OpsCenter 的 Policy Name 會帶「+<UUID>」尾碼，同一次執行的父作業與 VM 子作業尾碼相同
+const RE_POLICY_RUN = new RegExp("^(.*)\\+(" + UUID_SRC + ")$");
+const RE_UUID_G = new RegExp(UUID_SRC, "g");
+
+let userMap = {};      // { 客戶: { vmUuid: 顯示名稱 } }
+let uuidIndex = {};    // vmUuid -> { name, customer }
+
+function esc(v){
+  return String(v==null? "" : v).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+
+function loadMap(){
+  try{
+    const raw = localStorage.getItem(MAP_KEY);
+    if(raw){ const o = JSON.parse(raw); if(o && typeof o==="object") userMap = o; }
+  }catch(e){ userMap = {}; }
+  rebuildIndex();
+}
+function saveMap(){
+  try{ localStorage.setItem(MAP_KEY, JSON.stringify(userMap)); return true; }
+  catch(e){ return false; }
+}
+let sheetMap = {};     // 從雲端試算表讀到的對照表，格式同 userMap
+const SHEET_CACHE_KEY = "nbuAhvUuidMap.sheetCache.v1";
+
+function sheetCsvUrl(u){
+  u = (u||"").trim();
+  if(!u) return "";
+  const gid = (u.match(/[#?&]gid=(\d+)/)||[])[1];
+  let m = u.match(/\/spreadsheets\/d\/e\/([^\/?#]+)/);      // 「發布到網路」的連結
+  if(m) return `https://docs.google.com/spreadsheets/d/e/${m[1]}/pub?output=csv` + (gid? `&gid=${gid}&single=true` : "");
+  m = u.match(/\/spreadsheets\/d\/([^\/?#]+)/);              // 一般的共用連結
+  if(m) return `https://docs.google.com/spreadsheets/d/${m[1]}/gviz/tq?tqx=out:csv` + (gid? `&gid=${gid}` : "");
+  return u;
+}
+
+function parseCsv(text){
+  const rows = []; let row = [], cell = "", q = false;
+  for(let i=0;i<text.length;i++){
+    const c = text[i];
+    if(q){
+      if(c==='"'){ if(text[i+1]==='"'){ cell+='"'; i++; } else q=false; }
+      else cell += c;
+    } else if(c==='"') q = true;
+    else if(c===',' || c==='\t'){ row.push(cell); cell=""; }
+    else if(c==='\n'){ row.push(cell); rows.push(row); row=[]; cell=""; }
+    else if(c!=='\r') cell += c;
+  }
+  if(cell.length || row.length){ row.push(cell); rows.push(row); }
+  return rows.map(r=>r.map(x=>x.trim()));
+}
+
+// 試算表內容 → { 客戶: { uuid: 名稱 } }
+function sheetRowsToMap(rows){
+  const map = {}; let n = 0;
+  if(!rows.length) return {map, n};
+  const head = rows[0].map(h=>h.toLowerCase());
+  const hasHead = !rows[0].some(c=>RE_UUID.test(c));
+  let ci=-1, ni=-1, ui=-1;
+  if(hasHead){
+    head.forEach((h,i)=>{
+      if(ui<0 && /uuid|識別|id$/.test(h)) ui=i;
+      else if(ci<0 && /客戶|客户|customer|site|院/.test(h)) ci=i;
+      else if(ni<0 && /名稱|名称|name|vm|主機|display/.test(h)) ni=i;
+    });
+  }
+  for(const r of rows.slice(hasHead?1:0)){
+    let u = ui>=0 ? r[ui] : r.find(c=>RE_UUID.test(c));
+    const um = u && u.match(RE_UUID);
+    if(!um) continue;
+    const uuid = um[0].toLowerCase();
+    const rest = r.filter(c=>c && !RE_UUID.test(c));
+    const name = ni>=0 ? r[ni] : rest[rest.length-1];
+    const cust = (ci>=0 ? r[ci] : (rest.length>1 ? rest[0] : "")) || "未分類";
+    if(!name) continue;
+    (map[cust] = map[cust] || {})[uuid] = name; n++;
+  }
+  return {map, n};
+}
+
+async function loadSheet(){
+  const el = document.getElementById("sheetStat");
+  const url = sheetCsvUrl(SHEET_URL);
+  if(!url){ if(el) el.textContent = ""; return; }
+  if(el){ el.style.color = ""; el.textContent = "雲端對照表讀取中..."; }
+  try{
+    const res = await fetch(url + (url.includes("?")?"&":"?") + "_=" + Date.now(), {cache:"no-store"});
+    if(!res.ok) throw new Error("HTTP " + res.status);
+    const text = await res.text();
+    if(/^\s*<(!doctype|html)/i.test(text)) throw new Error("試算表沒有開放「知道連結的任何人可檢視」");
+    const {map, n} = sheetRowsToMap(parseCsv(text));
+    if(n===0) throw new Error("表格裡沒有讀到任何「VM名稱 + UUID」");
+    sheetMap = map;
+    try{ localStorage.setItem(SHEET_CACHE_KEY, JSON.stringify({time:Date.now(), map})); }catch(e){}
+    if(el) el.textContent = `雲端對照表：已載入 ${Object.keys(map).length} 個客戶 / ${n} 台 VM（${new Date().toLocaleTimeString()} 更新）`;
+  }catch(e){
+    let cached = null;
+    try{ cached = JSON.parse(localStorage.getItem(SHEET_CACHE_KEY)||"null"); }catch(_){}
+    if(cached && cached.map){
+      sheetMap = cached.map;
+      if(el){ el.style.color = "var(--warn)"; el.textContent = `雲端對照表讀取失敗（${e.message}），暫時使用 ${new Date(cached.time).toLocaleString()} 的舊資料`; }
+    } else if(el){
+      el.style.color = "var(--bad)"; el.textContent = `雲端對照表讀取失敗：${e.message}`;
+    }
+  }
+  rebuildIndex(); renderMapList();
+  if(lastResult) analyze();
+}
+
+function rebuildIndex(){
+  uuidIndex = {};
+  for(const src of [BUILTIN_MAP, userMap, sheetMap]){
+    for(const cust in src){
+      for(const u in src[cust]) uuidIndex[u.toLowerCase()] = {name: src[cust][u], customer: cust};
+    }
+  }
+}
+
+// 把 OpsCenter 報表裡的 Client Name 換成 VM 名稱；不是 AHV 的 client 回傳 null
+function resolveClient(raw){
+  if(!raw) return null;
+  const m = raw.trim().match(RE_UUID_CLIENT);
+  if(m){
+    const hit = uuidIndex[m[1].toLowerCase()];
+    return hit ? {name:hit.name, customer:hit.customer, uuid:m[1], known:true}
+               : {name:null, customer:null, uuid:m[1], known:false};
+  }
+  const all = raw.match(RE_UUID_G) || [];
+  for(const u of all){
+    const hit = uuidIndex[u.toLowerCase()];
+    if(hit) return {name:hit.name, customer:hit.customer, uuid:u, known:true};
+  }
+  return null;
+}
+function clientLabel(raw){
+  const r = resolveClient(raw);
+  if(!r) return `<b>${esc(raw)}</b>`;
+  if(!r.known) return `<b>${esc(raw)}</b> <span class="tag warn">未對照</span>`;
+  if(!r.name) return `<b>${esc(raw)}</b>`;
+  return `<b title="${esc(raw)}（${esc(r.customer)}）">${esc(r.name)}</b>`;
+}
+function clientPlain(raw){
+  const r = resolveClient(raw);
+  return (r && r.known) ? r.name : raw;
+}
+
+// 解析貼上的清單，回傳 [{uuid, name}]
+function parseMappingText(text){
+  const out = [];
+  const seen = {};
+  const add = (uuid, name)=>{
+    if(!uuid || !name) return;
+    uuid = String(uuid).toLowerCase(); name = String(name).trim();
+    if(!RE_UUID.test(uuid) || !name || seen[uuid]) return;
+    seen[uuid] = 1; out.push({uuid, name});
+  };
+  const trimmed = text.trim();
+
+  // 1) JSON（NBU API 回傳，或任何含 displayName + uuid 的結構）
+  if(/^[\[{]/.test(trimmed)){
+    try{
+      const walk = (o)=>{
+        if(Array.isArray(o)){ o.forEach(walk); return; }
+        if(!o || typeof o!=="object") return;
+        const c = o.commonAssetAttributes || {};
+        const name = c.displayName || o.displayName || o.vmDisplayName || o.name;
+        let uuid = o.uuid || o.vmUuid || o.instanceUuid;
+        if(!uuid){
+          for(const k of ["clientName","assetId","id"]){
+            const m = typeof o[k]==="string" && o[k].match(RE_AHV_ID);
+            if(m){ uuid = m[1]; break; }
+          }
+        }
+        if(typeof name==="string" && typeof uuid==="string") add(uuid, name);
+        for(const k in o) walk(o[k]);
+      };
+      walk(JSON.parse(trimmed));
+      if(out.length) return out;
+    }catch(e){ /* 不是合法 JSON，改用文字模式 */ }
+  }
+
+  // 2) 文字 / 表格
+  const lines = text.split(/\r?\n/);
+  let prevText = "";
+  const cellsOf = (s)=> s.split(/\t|,|;|\s{2,}/).map(x=>x.trim().replace(/^"|"$/g,"")).filter(x=>x.length);
+  for(const rawLine of lines){
+    const line = rawLine.trim();
+    if(!line) continue;
+    const m = line.match(RE_AHV_ID);
+    if(m){
+      // 名稱在同一列（ID 前面那一格），否則取上一列
+      const before = cellsOf(line.slice(0, m.index));
+      const name = before.length ? before[before.length-1] : cellsOf(prevText)[0];
+      add(m[1], name);
+      prevText = "";
+      continue;
+    }
+    const u = line.match(RE_UUID);
+    if(u){
+      // 「名稱,UUID」或「UUID,名稱」
+      const others = cellsOf(line).filter(c=>!RE_UUID.test(c));
+      if(others.length) add(u[0], others[0]);
+      prevText = "";
+      continue;
+    }
+    prevText = line;
+  }
+  return out;
+}
+
+function importMapping(){
+  const cust = document.getElementById("mapCust").value.trim();
+  const text = document.getElementById("mapPaste").value;
+  const stat = document.getElementById("mapStat");
+  if(!cust){ stat.textContent = "請先填客戶名稱"; return; }
+  const found = parseMappingText(text);
+  if(found.length===0){
+    stat.textContent = "沒有解析到任何「名稱 + UUID」，請確認貼上的內容含有 Nutanix-AHV_ 開頭的 ID";
+    document.getElementById("mapPreview").innerHTML = "";
+    return;
+  }
+  if(!userMap[cust]) userMap[cust] = {};
+  let added=0, updated=0;
+  for(const f of found){
+    if(userMap[cust][f.uuid]===undefined) added++;
+    else if(userMap[cust][f.uuid]!==f.name) updated++;
+    userMap[cust][f.uuid] = f.name;
+  }
+  rebuildIndex();
+  const ok = saveMap();
+  stat.textContent = `${cust}：新增 ${added} 台、更新 ${updated} 台（本次貼上共 ${found.length} 台）` + (ok? "" : "　⚠ 瀏覽器不允許儲存，重新整理後會消失，請先匯出對照檔");
+  document.getElementById("mapPreview").innerHTML = `
+    <h3>本次匯入結果（請抽看名稱是否對得上）</h3>
+    <div class="table-scroll"><table>
+      <tr><th style="width:40%">VM 名稱</th><th>VM UUID</th></tr>
+      ${found.map(f=>`<tr><td>${esc(f.name)}</td><td style="font-family:Consolas,monospace;font-size:14px;">${esc(f.uuid)}</td></tr>`).join("")}
+    </table></div>`;
+  document.getElementById("mapPaste").value = "";
+  renderMapList();
+  if(lastResult) analyze();
+  return {cust, found};
+}
+
+// 一鍵：解析貼上的清單 → 加入對照表 → 複製成「客戶 / VM名稱 / UUID」三欄，可直接貼進 Google 試算表
+function addAndCopy(){
+  const r = importMapping();
+  if(!r) return;
+  const text = r.found.map(f=>`${r.cust}\t${f.name}\t${f.uuid}`).join("\n");
+  const stat = document.getElementById("mapStat");
+  const done = ()=>{ stat.textContent = `${r.cust}：${r.found.length} 台已複製，到試算表最下面的空白列按 Ctrl+V 貼上`; };
+  const fallback = ()=>{
+    const ta = document.getElementById("mapPaste"); ta.value = text; ta.select();
+    try{ if(!document.execCommand("copy")) throw 0; ta.value = ""; done(); }
+    catch(e){ stat.textContent = "瀏覽器不允許自動複製，三欄資料已放進上面的框，請全選後自行複製"; }
+  };
+  if(navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done, fallback);
+  else fallback();
+}
+
+function removeCustomer(cust){
+  if(!confirm(`確定要刪除「${cust}」的對照表嗎？`)) return;
+  delete userMap[cust];
+  rebuildIndex(); saveMap(); renderMapList();
+  document.getElementById("mapPreview").innerHTML = "";
+  if(lastResult) analyze();
+}
+
+function exportMapping(){
+  const data = {format:"nbu-ahv-uuid-map", version:1, exported:new Date().toISOString(), customers:userMap};
+  const blob = new Blob([JSON.stringify(data,null,2)], {type:"application/json"});
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "nbu-ahv-uuid-map.json";
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
+}
+
+function importMappingFile(input){
+  const f = input.files && input.files[0];
+  const stat = document.getElementById("mapStat");
+  if(!f) return;
+  const rd = new FileReader();
+  rd.onload = ()=>{
+    try{
+      const o = JSON.parse(rd.result);
+      const custs = o && o.customers;
+      if(!custs || typeof custs!=="object") throw new Error("格式不符");
+      let n=0;
+      for(const c in custs){
+        if(!userMap[c]) userMap[c] = {};
+        for(const u in custs[c]){
+          if(RE_UUID.test(u) && typeof custs[c][u]==="string"){ userMap[c][u.toLowerCase()] = custs[c][u]; n++; }
+        }
+      }
+      rebuildIndex();
+      const ok = saveMap();
+      stat.textContent = `已匯入對照檔：${Object.keys(custs).length} 個客戶、${n} 台 VM` + (ok? "" : "　⚠ 瀏覽器不允許儲存，重新整理後會消失");
+      renderMapList();
+      if(lastResult) analyze();
+    }catch(e){
+      stat.textContent = "對照檔讀取失敗：這不是本工具匯出的 .json 檔";
+    }
+    input.value = "";
+  };
+  rd.readAsText(f);
+}
+
+function renderMapList(){
+  const custs = Object.keys(userMap).sort();
+  const builtin = Object.keys(BUILTIN_MAP);
+  const total = Object.keys(uuidIndex).length;
+  document.getElementById("mapHeadStat").textContent =
+    total ? `已載入 ${new Set([...custs,...builtin,...Object.keys(sheetMap)]).size} 個客戶 / ${total} 台 VM　點擊展開` : "尚未匯入　點擊展開";
+  document.getElementById("mapCustList").innerHTML = custs.map(c=>`<option value="${esc(c)}">`).join("");
+  if(custs.length===0 && builtin.length===0){
+    document.getElementById("mapList").innerHTML = "";
+    return;
+  }
+  const rows = custs.map((c,i)=>`<tr><td>${esc(c)}</td><td>${Object.keys(userMap[c]).length}</td>
+      <td><button class="danger" data-cust="${esc(c)}" onclick="removeCustomer(this.dataset.cust)">刪除</button></td></tr>`).join("")
+    + builtin.map(c=>`<tr><td>${esc(c)} <span class="badge-type">內建</span></td><td>${Object.keys(BUILTIN_MAP[c]).length}</td><td></td></tr>`).join("");
+  document.getElementById("mapList").innerHTML = `
+    <h3>已載入的客戶</h3>
+    <div class="table-scroll"><table>
+      <tr><th>客戶</th><th style="width:140px">VM 數量</th><th style="width:120px"></th></tr>
+      ${rows}
+    </table></div>`;
+}
+
+function toggleMapCard(){
+  const body = document.getElementById("mapBody");
+  const arrow = document.getElementById("mapArrow");
+  const open = body.style.display !== "none";
+  body.style.display = open ? "none" : "block";
+  arrow.textContent = open ? "▾" : "▴";
+}
 
 // ---------- Parsing ----------
 const HEADER_ALIASES = ["job status","client name","policy name","status code","job start time"];
@@ -240,11 +625,20 @@ function parsePasted(raw){
     if(idx.status===undefined) continue;
     const status = (parts[idx.status]||"").trim();
     if(!/^(successful|failed|partially successful)/i.test(status)) continue;
+    const polRaw = idx.policy!==undefined? (parts[idx.policy]||"").trim() : "";
+    const pm = polRaw.match(RE_POLICY_RUN);
+    const polBase = pm ? pm[1] : polRaw;
+    const runId = pm ? pm[2].toLowerCase() : "";
+    const clientRaw = idx.client!==undefined? (parts[idx.client]||"").trim() : "";
+    const schedRaw = idx.schedname!==undefined? (parts[idx.schedname]||"").trim() : "";
     rows.push({
       status: status,
       jobtype: idx.jobtype!==undefined? (parts[idx.jobtype]||"").trim() : "",
       client: idx.client!==undefined? (parts[idx.client]||"").trim() : "",
-      policy: idx.policy!==undefined? (parts[idx.policy]||"").trim() : "",
+      policy: polBase,
+      runId: runId,
+      isParent: /^unknown$/i.test(schedRaw) && !RE_UUID_CLIENT.test(clientRaw),
+      end: idx.end!==undefined? parseDate(parts[idx.end]) : null,
       level: idx.level!==undefined? (parts[idx.level]||"").trim() : "",
       schedname: idx.schedname!==undefined? (parts[idx.schedname]||"").trim() : "",
       startRaw: idx.start!==undefined? (parts[idx.start]||"").trim() : "",
@@ -256,20 +650,9 @@ function parsePasted(raw){
 }
 
 // ---------- classify oracle arch/full ----------
-// 只看「失敗時間點之後」的紀錄，避免把更早那一輪的成功誤當成這次失敗的後續恢復
-function laterThan(list, refRow){
-  const refIdx = list.indexOf(refRow);
-  const after = list.slice(refIdx+1);
-  if(refRow.start){
-    return after.filter(r=>!r.start || r.start >= refRow.start);
-  }
-  return after;
-}
-
 function renderRelatedBackupCheck(list, snapshotRow, client, policy){
-  const after = laterThan(list, snapshotRow);
-  const snaps = after.filter(r=>r.jobtype==="Snapshot");
-  const backups = after.filter(r=>r.jobtype==="Backup");
+  const snaps = list.filter(r=>r.jobtype==="Snapshot");
+  const backups = list.filter(r=>r.jobtype==="Backup");
 
   const lastSnap = snaps.length ? snaps[snaps.length-1] : null;
   const lastBackup = backups.length ? backups[backups.length-1] : null;
@@ -277,12 +660,12 @@ function renderRelatedBackupCheck(list, snapshotRow, client, policy){
   const snapOk = lastSnap ? isSuccess(lastSnap.status) : null;
   const backupOk = lastBackup ? isSuccess(lastBackup.status) : null;
 
-  const snapLine = snapOk===null ? "Snapshot：此次失敗後無新紀錄" : (snapOk ? `Snapshot：後續成功 (${lastSnap.startRaw})` : `Snapshot：後續仍失敗 (最新 ${lastSnap.startRaw})`);
-  const backupLine = backupOk===null ? "Backup：此次失敗後無新紀錄（可能因 Snapshot 失敗而未觸發）" : (backupOk ? `Backup：後續成功 (${lastBackup.startRaw})` : `Backup：後續仍失敗 (最新 ${lastBackup.startRaw})`);
+  const snapLine = snapOk===null ? "Snapshot：無紀錄" : (snapOk ? `Snapshot：後續成功 (${lastSnap.startRaw})` : `Snapshot：後續仍失敗 (最新 ${lastSnap.startRaw})`);
+  const backupLine = backupOk===null ? "Backup：無紀錄（可能因 Snapshot 失敗而未觸發）" : (backupOk ? `Backup：後續成功 (${lastBackup.startRaw})` : `Backup：後續仍失敗 (最新 ${lastBackup.startRaw})`);
 
   return `<div class="small" style="margin-top:6px;">
-    <b>${client} / ${policy}</b> 這台主機，在 ${snapshotRow.startRaw} 失敗之後 —<br>
-    <span style="color:${snapOk===false?'var(--bad)':(snapOk===null?'var(--sub)':'var(--ok)')}">${snapLine}</span>
+    <b>${esc(clientPlain(client))} / ${esc(policy)}</b> 這台主機 —<br>
+    <span style="color:${snapOk===false?'var(--bad)':'var(--ok)'}">${snapLine}</span>　
     <span style="color:${backupOk===false?'var(--bad)':(backupOk===null?'var(--sub)':'var(--ok)')}">${backupLine}</span>
   </div>`;
 }
@@ -315,9 +698,32 @@ function analyze(){
     return;
   }
 
+  // 同一次執行（policy 尾碼相同）底下的 VM 子作業
+  const runChildren = {};
+  for(const r of parsed.rows){
+    if(r.runId && RE_UUID_CLIENT.test(r.client)){
+      (runChildren[r.runId] = runChildren[r.runId] || []).push(r.client);
+    }
+  }
+
+  // 父作業失敗 → 找同一次執行裡失敗的 VM 子作業（同尾碼，或同 policy 且開始時間落在父作業期間內）
+  let foldedCount = 0;
+  for(const pr of parsed.rows){
+    pr.folded = false;
+    if(!pr.isParent || !isFailLike(pr.status)) continue;
+    const hit = parsed.rows.some(c=>{
+      if(c===pr || !isFailLike(c.status) || !RE_UUID_CLIENT.test(c.client) || c.policy!==pr.policy) return false;
+      if(pr.runId && c.runId) return c.runId===pr.runId;
+      if(pr.start && pr.end && c.start) return c.start>=pr.start && c.start<=pr.end;
+      return false;
+    });
+    if(hit){ pr.folded = true; foldedCount++; }
+  }
+  const visibleRows = parsed.rows.filter(r=>!r.folded);
+
   // group by client+policy
   const groups = {};
-  for(const r of parsed.rows){
+  for(const r of visibleRows){
     const key = r.client + " || " + r.policy;
     if(!groups[key]) groups[key] = [];
     groups[key].push(r);
@@ -330,7 +736,7 @@ function analyze(){
   }
 
   // summary counts
-  let totalFail = parsed.rows.filter(r=>isFailLike(r.status)).length;
+  let totalFail = visibleRows.filter(r=>isFailLike(r.status)).length;
   let totalOk = parsed.rows.filter(r=>isSuccess(r.status)).length;
 
   document.getElementById("summaryCard").style.display="";
@@ -339,23 +745,17 @@ function analyze(){
       <span class="tag big ${totalFail>0?'bad':'ok'}">失敗 ${totalFail} 筆</span>
       <span class="stat">共解析 ${parsed.rows.length} 筆紀錄 / ${Object.keys(groups).length} 組 Client/Policy</span>
     </div>
+    ${foldedCount>0? `<div class="small" style="margin-top:8px;">另有 ${foldedCount} 筆父作業失敗是由下列 VM 失敗造成，已併入該 VM 顯示，不重複列出。</div>` : ""}
   `;
 
-  // need-check: for each Client/Policy group, find the last Failed row *of its own level type*
-  // (Full vs Archived Redo Log Backup etc are different backup purposes and must not be conflated)
+  // need-check: policies where last event is Failed (no later success)
   const needCheck = [];
   for(const key in groups){
     const list = groups[key];
-    const failRowsAll = list.filter(r=>isFailLike(r.status));
-    if(failRowsAll.length===0) continue;
-    const lastFailOverall = failRowsAll[failRowsAll.length-1];
-    // only compare against rows sharing the same level type as this last failure
-    const sameLevelRows = list.filter(r=>r.level===lastFailOverall.level);
-    const idxInSameLevel = sameLevelRows.indexOf(lastFailOverall);
-    const laterSameLevel = sameLevelRows.slice(idxInSameLevel+1);
-    const hasSameLevelSuccess = laterSameLevel.some(r=>isSuccess(r.status));
-    if(!hasSameLevelSuccess){
-      needCheck.push({key, list, last: lastFailOverall, hasAnySuccess:false});
+    const last = list[list.length-1];
+    if(isFailLike(last.status)){
+      const anySuccessAfterFail = list.some(r=> isSuccess(r.status));
+      needCheck.push({key, list, last, hasAnySuccess: anySuccessAfterFail});
     }
   }
 
@@ -381,18 +781,16 @@ function analyze(){
     const isUnresolved = needCheck.some(n=>n.key===key);
 
     // build one-line overview for any group whose last-fail was a Snapshot job
-    // 同樣只看失敗時間點之後的紀錄
     if(lastFail.jobtype==="Snapshot"){
-      const afterFail = laterThan(list, lastFail);
-      const snaps = afterFail.filter(r=>r.jobtype==="Snapshot");
-      const backups = afterFail.filter(r=>r.jobtype==="Backup");
+      const snaps = list.filter(r=>r.jobtype==="Snapshot");
+      const backups = list.filter(r=>r.jobtype==="Backup");
       const lastSnap = snaps.length ? snaps[snaps.length-1] : null;
       const lastBackup = backups.length ? backups[backups.length-1] : null;
       const snapOk = lastSnap ? isSuccess(lastSnap.status) : null;
       const backupOk = lastBackup ? isSuccess(lastBackup.status) : null;
-      const snapCell = snapOk===null ? '<span class="small">無後續紀錄</span>' : (snapOk? '<span style="color:var(--ok)">成功</span>' : '<span style="color:var(--bad)">失敗</span>');
-      const backupCell = backupOk===null ? '<span class="small">無後續紀錄</span>' : (backupOk? '<span style="color:var(--ok)">成功</span>' : '<span style="color:var(--bad)">失敗</span>');
-      overviewRows += `<tr><td>${client}</td><td>${policy}</td><td>${snapCell}</td><td>${backupCell}</td></tr>`;
+      const snapCell = snapOk===null ? '<span class="small">無紀錄</span>' : (snapOk? '<span style="color:var(--ok)">成功</span>' : '<span style="color:var(--bad)">失敗</span>');
+      const backupCell = backupOk===null ? '<span class="small">無紀錄</span>' : (backupOk? '<span style="color:var(--ok)">成功</span>' : '<span style="color:var(--bad)">失敗</span>');
+      overviewRows += `<tr><td>${clientLabel(client)}</td><td>${esc(policy)}</td><td>${snapCell}</td><td>${backupCell}</td></tr>`;
     }
 
     const distinctCodes = [...new Set(failRows.map(r=>r.errcode).filter(c=>c))];
@@ -401,19 +799,27 @@ function analyze(){
       return `<span class="badge-type">Error ${c}${e? "："+e.short:""}</span>`;
     }).join(" ");
 
-    // generic recovery info for non-Snapshot types: only compare against the SAME level type
-    // (Full vs Archived Redo Log Backup are different backup purposes, must not cross-match)
+    // generic recovery info for non-Snapshot types: show when it next succeeded after last failure
     let recoveryHtml = "";
     if(lastFail.jobtype!=="Snapshot"){
-      const sameLevelRows = list.filter(r=>r.level===lastFail.level);
-      const idxInSameLevel = sameLevelRows.indexOf(lastFail);
-      const nextSuccess = sameLevelRows.slice(idxInSameLevel+1).find(r=>isSuccess(r.status));
-      const levelLabel = lastFail.level || "同類型";
+      const lastFailIdx = list.indexOf(lastFail);
+      const afterFail = list.slice(lastFailIdx+1);
+      const nextSuccess = afterFail.find(r=>isSuccess(r.status));
       if(!isUnresolved && nextSuccess){
-        recoveryHtml = `<div class="small" style="margin-top:6px;color:var(--ok);">同為「${levelLabel}」的排程，後續已於 <b>${nextSuccess.startRaw}</b> 恢復成功</div>`;
+        recoveryHtml = `<div class="small" style="margin-top:6px;color:var(--ok);">後續已於 <b>${nextSuccess.startRaw}</b> 恢復成功</div>`;
       } else if(isUnresolved){
-        recoveryHtml = `<div class="small" style="margin-top:6px;color:var(--bad);">此表格範圍內，同為「${levelLabel}」的排程尚未看到後續成功紀錄</div>`;
+        recoveryHtml = `<div class="small" style="margin-top:6px;color:var(--bad);">此表格範圍內最後一筆仍為失敗，尚未看到後續成功紀錄</div>`;
       }
+    }
+
+    let parentHtml = "";
+    const parentFails = failRows.filter(r=>r.isParent);
+    if(parentFails.length){
+      const kids = [...new Set(parentFails.flatMap(r=>runChildren[r.runId]||[]))];
+      parentHtml = `<div class="small" style="margin-top:6px;color:var(--warn);">這是 VM 備份的「父作業」（探索 / 準備階段）失敗，OpsCenter 在 Client 欄位填的是 backup host <b>${esc(client)}</b>，不是 VM。`
+        + (kids.length ? `<br>同一次執行有備份到的 VM：${kids.map(k=>clientLabel(k)).join("、")}`
+                       : `<br>報表內找不到這次執行的 VM 子作業，代表還沒輪到任何一台 VM 開始備份就失敗了，請到 NBU 看 policy <b>${esc(policy)}</b> 的 job 明細。`)
+        + `</div>`;
     }
 
     const footerHtml = `
@@ -421,10 +827,11 @@ function analyze(){
           <div><b>Error Code ${lastFail.errcode||"?"}</b>${err? " ： "+err.short : ""}</div>
           ${err? `<div class="small" style="margin-top:4px;">常見原因：${err.detail}</div>` : `<div class="small" style="margin-top:4px;">此代碼未在內建對照表中，請查詢原廠文件。</div>`}
           ${lastFail.jobtype==="Snapshot" ? renderRelatedBackupCheck(list, lastFail, client, policy) : recoveryHtml}
+          ${parentHtml}
         </div>`;
     dhtml += `<div class="group">
       <div class="group-head" onclick="toggleGroup(${gi})">
-        <span><b>${client}</b> / ${policy}</span>
+        <span>${clientLabel(client)} / ${esc(policy)}</span>
         <span><span class="tag ${tagCls}">${tagTxt}</span> ${codeBadges} <span class="small">共 ${failRows.length} 筆失敗 / 全部 ${list.length} 筆</span></span>
       </div>
       <div class="group-body" id="gbody${gi}">
@@ -443,7 +850,7 @@ function analyze(){
     </div>`;
   }
   if(shownGroups===0){
-    dhtml = '<div class="empty">N/A</div>';
+    dhtml = '<div class="empty">本次資料沒有任何 Failed 紀錄，完全不用檢查。</div>';
   }
   const overviewHtml = overviewRows ? `
     <h3>VM Snapshot/Backup 失敗總覽</h3>
@@ -470,10 +877,15 @@ function toggleGroup(i){
   el.classList.toggle("open");
 }
 
+loadMap();
+renderMapList();
+if(SHEET_URL){ document.getElementById("sheetReload").style.display = ""; loadSheet(); }
+
 function clearAll(){
   document.getElementById("pasteArea").value = "";
   document.getElementById("parseStat").textContent = "";
   ["summaryCard","detailCard"].forEach(id=>document.getElementById(id).style.display="none");
+  lastResult = null;
 }
 
 
