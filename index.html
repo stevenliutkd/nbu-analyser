@@ -55,6 +55,7 @@
 <header>
   <h1>NBU 每日備份回報 分析工具</h1>
   <p>直接從郵件表格 Ctrl+A 複製整段內容，貼到下方即可分析 — 不需要另存 Excel</p>
+  <p style="font-size:14px;opacity:.7;">版本 2026-10-06 18:05（雲端對照表）</p>
 </header>
 
 <div class="wrap">
@@ -202,7 +203,7 @@ const BUILTIN_MAP = {};
 // ★ 雲端對照表：把 Google 試算表的連結貼在引號裡（共用設定要是「知道連結的任何人 → 檢視者」）。
 //   表格第一列是標題，欄位為：客戶 | VM名稱 | UUID
 //   之後客戶 VM 改名，只要改試算表，不用動這個檔案。
-const SHEET_URL = "";
+const SHEET_URL = "https://docs.google.com/spreadsheets/d/1JILQoqGqq90QrFR3Obhu6NCEeV5ins66X59gB_VsAIY/edit?gid=0#gid=0";
 
 const MAP_KEY = "nbuAhvUuidMap.v1";
 const UUID_SRC = "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}";
