@@ -57,8 +57,7 @@
 
 <header>
   <h1>NBU 每日備份回報 分析工具</h1>
-  <p>直接從郵件表格 Ctrl+A 複製整段內容，貼到下方即可分析 — 不需要另存 Excel</p>
-  <p style="font-size:14px;opacity:.7;">版本 2026-10-28（加入試算表連結）</p>
+  <p style="font-size:14px;opacity:.7;">版本 2026-11-03（失敗總覽只列未修復）</p>
 </header>
 
 <div class="wrap">
@@ -168,6 +167,7 @@ const ERR_CODES = {
   "4275": {short:"無法合併虛擬機磁碟 (disk consolidation failed)", detail:"NetBackup 在建立快照前、或刪除快照後嘗試合併(consolidate)VM 磁碟失敗。常見於 VM 磁碟有殘留的快照鏈結構複雜或磁碟空間不足。建議至 vCenter 手動執行 Consolidate 後重跑備份。"},
   "4287": {short:"VM 上已存在 NetBackup 建立的快照", detail:"VM 上已有 NBU_SNAPSHOT 或 NBU_RESTORE 開頭的殘留快照，且 policy 設定為偵測到既有快照時直接中止。常見於上次備份的快照未被正確刪除，或兩個 policy 同時對同一台 VM 備份互相衝突。可於 vSphere 手動移除該殘留快照。"},
   "4292": {short:"無法啟用 Change Block Tracking (CBT)", detail:"VM 尚未啟用 CBT 且目前已存在快照(snapshot)，導致 NetBackup 無法在備份時啟用 CBT（vSphere 6.5+ 的已知限制）。需先在 vCenter 手動移除/合併該 VM 的既有快照，再重新執行備份。"},
+  "4726": {short:"無法建立指定 VM 的快照 (CDP/RHV)", detail:"常見於 CDP(Continuous Data Protection) 或 RHV 虛擬化平台環境。建議先確認該 VM 在備份開始前沒有被鎖定(unlocked)，可嘗試手動建立一個臨時快照測試平台本身是否正常；若為 CDP 備份，也要確認 CDP Gateway 上的 nbcctd 服務正常運作，並查看 bpfis / nbcctd log 進一步定位。"},
   "4748": {short:"無法取得該虛擬機資訊 (Java console)", detail:"常見於 Nutanix/VM 環境，因憑證(certificate)或虛擬化平台認證設定問題導致 NetBackup 無法讀取 VM 資訊。建議確認 Virtual Machine Servers 認證是否正確、Master/Media Server 憑證是否過期。"},
   "7625": {short:"SSL 交握失敗 (vnetd proxy)", detail:"與遠端主機的 vnetd proxy 無法完成 SSL 交握，常見原因：憑證遺失/過期/被撤銷、主機間時間差過大(clock skew)、cipher 設定不相容。建議檢查憑證狀態與兩端系統時間是否同步。"},
   "7641": {short:"找不到共同的憑證授權根 (CA Root)", detail:"雙方主機找不到共同信任的 CA Root，無法建立安全連線。常見於 Master Server 重灌/災難復原後憑證資訊不一致，或 Client 端 Server list 設定錯誤指向錯誤的 Master。可能需要重新核發憑證(nbcertcmd)或修正 certmapinfo.json 中的 masterHostId。"},
@@ -575,8 +575,9 @@ function parsePasted(raw){
 
 // ---------- classify oracle arch/full ----------
 function renderRelatedBackupCheck(list, snapshotRow, client, policy){
-  const snaps = list.filter(r=>r.jobtype==="Snapshot");
-  const backups = list.filter(r=>r.jobtype==="Backup");
+  const after = laterThan(list, snapshotRow);
+  const snaps = after.filter(r=>r.jobtype==="Snapshot");
+  const backups = after.filter(r=>r.jobtype==="Backup");
 
   const lastSnap = snaps.length ? snaps[snaps.length-1] : null;
   const lastBackup = backups.length ? backups[backups.length-1] : null;
@@ -584,14 +585,32 @@ function renderRelatedBackupCheck(list, snapshotRow, client, policy){
   const snapOk = lastSnap ? isSuccess(lastSnap.status) : null;
   const backupOk = lastBackup ? isSuccess(lastBackup.status) : null;
 
-  const snapLine = snapOk===null ? "Snapshot：無紀錄" : (snapOk ? `Snapshot：後續成功 (${lastSnap.startRaw})` : `Snapshot：後續仍失敗 (最新 ${lastSnap.startRaw})`);
-  const backupLine = backupOk===null ? "Backup：無紀錄（可能因 Snapshot 失敗而未觸發）" : (backupOk ? `Backup：後續成功 (${lastBackup.startRaw})` : `Backup：後續仍失敗 (最新 ${lastBackup.startRaw})`);
+  const snapLine = snapOk===null ? "Snapshot：此次失敗後無新紀錄" : (snapOk ? `Snapshot：後續成功 (${lastSnap.startRaw})` : `Snapshot：後續仍失敗 (最新 ${lastSnap.startRaw})`);
+  const backupLine = backupOk===null ? "Backup：此次失敗後無新紀錄（可能因 Snapshot 失敗而未觸發）" : (backupOk ? `Backup：後續成功 (${lastBackup.startRaw})` : `Backup：後續仍失敗 (最新 ${lastBackup.startRaw})`);
 
   return `<div class="small" style="margin-top:6px;">
-    <b>${esc(clientPlain(client))} / ${esc(policy)}</b> 這台主機 —<br>
-    <span style="color:${snapOk===false?'var(--bad)':'var(--ok)'}">${snapLine}</span>　
+    <b>${esc(clientPlain(client))} / ${esc(policy)}</b> 這台主機，在 ${esc(snapshotRow.startRaw)} 失敗之後 —<br>
+    <span style="color:${snapOk===false?'var(--bad)':(snapOk===null?'var(--sub)':'var(--ok)')}">${snapLine}</span>　
     <span style="color:${backupOk===false?'var(--bad)':(backupOk===null?'var(--sub)':'var(--ok)')}">${backupLine}</span>
   </div>`;
+}
+
+// 只看「失敗時間點之後」的紀錄，避免把更早那一輪的成功誤當成這次失敗的恢復
+function laterThan(list, refRow){
+  const after = list.slice(list.indexOf(refRow)+1);
+  return refRow.start ? after.filter(r=>!r.start || r.start >= refRow.start) : after;
+}
+// 判斷這組 Client/Policy 最後一次失敗之後有沒有恢復：
+//  - VM 類（最後失敗是 Snapshot）：之後要有 Backup 成功才算；整組完全沒有 Backup 作業時，看 Snapshot
+//  - 其他：之後要有「同一種 Schedule/Level Type」的成功（Full 失敗不能拿 Arch 成功充數）
+function recoveryOf(list, lastFail){
+  const after = laterThan(list, lastFail);
+  if(lastFail.jobtype==="Snapshot"){
+    const hasBackup = list.some(r=>r.jobtype==="Backup");
+    const ok = after.find(r=>isSuccess(r.status) && r.jobtype===(hasBackup?"Backup":"Snapshot"));
+    return ok || null;
+  }
+  return after.find(r=>isSuccess(r.status) && r.level===lastFail.level) || null;
 }
 
 function isFailLike(status){
@@ -676,11 +695,10 @@ function analyze(){
   const needCheck = [];
   for(const key in groups){
     const list = groups[key];
-    const last = list[list.length-1];
-    if(isFailLike(last.status)){
-      const anySuccessAfterFail = list.some(r=> isSuccess(r.status));
-      needCheck.push({key, list, last, hasAnySuccess: anySuccessAfterFail});
-    }
+    const fails = list.filter(r=>isFailLike(r.status));
+    if(!fails.length) continue;
+    const lastFail = fails[fails.length-1];
+    if(!recoveryOf(list, lastFail)) needCheck.push({key, list, last: lastFail});
   }
 
   // needCheck kept internally for tagging groups (未修復 vs 曾失敗但已修復), no longer shown as separate box
@@ -688,7 +706,9 @@ function analyze(){
   // detail groups (collapsible)
   document.getElementById("detailCard").style.display="";
   let overviewRows = "";
+  let overviewRecovered = 0;
   let dhtml = "";
+  const groupEntries = [];
   let gi=0;
   let shownGroups=0;
   for(const key in groups){
@@ -704,16 +724,20 @@ function analyze(){
     const err = ERR_CODES[lastFail.errcode];
     const isUnresolved = needCheck.some(n=>n.key===key);
 
-    // build one-line overview for any group whose last-fail was a Snapshot job
-    if(lastFail.jobtype==="Snapshot"){
-      const snaps = list.filter(r=>r.jobtype==="Snapshot");
-      const backups = list.filter(r=>r.jobtype==="Backup");
+    // VM 類（有 Snapshot 作業）的失敗：未修復的列入總覽，已修復的只計數
+    const isVM = list.some(r=>r.jobtype==="Snapshot") && (lastFail.jobtype==="Snapshot" || lastFail.jobtype==="Backup");
+    if(isVM && !isUnresolved){
+      overviewRecovered++;
+    } else if(isVM){
+      const afterFail = laterThan(list, lastFail);
+      const snaps = afterFail.filter(r=>r.jobtype==="Snapshot");
+      const backups = afterFail.filter(r=>r.jobtype==="Backup");
       const lastSnap = snaps.length ? snaps[snaps.length-1] : null;
       const lastBackup = backups.length ? backups[backups.length-1] : null;
       const snapOk = lastSnap ? isSuccess(lastSnap.status) : null;
       const backupOk = lastBackup ? isSuccess(lastBackup.status) : null;
-      const snapCell = snapOk===null ? '<span class="small">無紀錄</span>' : (snapOk? '<span style="color:var(--ok)">成功</span>' : '<span style="color:var(--bad)">失敗</span>');
-      const backupCell = backupOk===null ? '<span class="small">無紀錄</span>' : (backupOk? '<span style="color:var(--ok)">成功</span>' : '<span style="color:var(--bad)">失敗</span>');
+      const snapCell = snapOk===null ? '<span class="small">無後續紀錄</span>' : (snapOk? '<span style="color:var(--ok)">成功</span>' : '<span style="color:var(--bad)">失敗</span>');
+      const backupCell = backupOk===null ? '<span class="small">無後續紀錄</span>' : (backupOk? '<span style="color:var(--ok)">成功</span>' : '<span style="color:var(--bad)">失敗</span>');
       overviewRows += `<tr><td>${clientLabel(client)}</td><td>${esc(policy)}</td><td>${snapCell}</td><td>${backupCell}</td></tr>`;
     }
 
@@ -726,13 +750,12 @@ function analyze(){
     // generic recovery info for non-Snapshot types: show when it next succeeded after last failure
     let recoveryHtml = "";
     if(lastFail.jobtype!=="Snapshot"){
-      const lastFailIdx = list.indexOf(lastFail);
-      const afterFail = list.slice(lastFailIdx+1);
-      const nextSuccess = afterFail.find(r=>isSuccess(r.status));
-      if(!isUnresolved && nextSuccess){
-        recoveryHtml = `<div class="small" style="margin-top:6px;color:var(--ok);">後續已於 <b>${nextSuccess.startRaw}</b> 恢復成功</div>`;
-      } else if(isUnresolved){
-        recoveryHtml = `<div class="small" style="margin-top:6px;color:var(--bad);">此表格範圍內最後一筆仍為失敗，尚未看到後續成功紀錄</div>`;
+      const nextSuccess = recoveryOf(list, lastFail);
+      const levelLabel = esc(lastFail.level || "同類型");
+      if(nextSuccess){
+        recoveryHtml = `<div class="small" style="margin-top:6px;color:var(--ok);">同為「${levelLabel}」的排程，後續已於 <b>${esc(nextSuccess.startRaw)}</b> 恢復成功</div>`;
+      } else {
+        recoveryHtml = `<div class="small" style="margin-top:6px;color:var(--bad);">此表格範圍內，同為「${levelLabel}」的排程尚未看到後續成功紀錄</div>`;
       }
     }
 
@@ -753,7 +776,7 @@ function analyze(){
           ${lastFail.jobtype==="Snapshot" ? renderRelatedBackupCheck(list, lastFail, client, policy) : recoveryHtml}
           ${parentHtml}
         </div>`;
-    dhtml += `<div class="group">
+    groupEntries.push({unresolved: isUnresolved, html: `<div class="group">
       <div class="group-head" onclick="toggleGroup(${gi})">
         <span>${clientLabel(client)} / ${esc(policy)}</span>
         <span><span class="tag ${tagCls}">${tagTxt}</span> ${codeBadges} <span class="small">共 ${failRows.length} 筆失敗 / 全部 ${list.length} 筆</span></span>
@@ -771,19 +794,22 @@ function analyze(){
         </div>
         ${footerHtml}
       </div>
-    </div>`;
+    </div>`});
   }
+  // 未修復的排前面，已修復的排後面（同類內維持原順序）
+  dhtml = groupEntries.filter(e=>e.unresolved).concat(groupEntries.filter(e=>!e.unresolved)).map(e=>e.html).join("");
   if(shownGroups===0){
-    dhtml = '<div class="empty">本次資料沒有任何 Failed 紀錄，完全不用檢查。</div>';
+    dhtml = '<div class="empty">N/A</div>';
   }
+  const recoveredNote = overviewRecovered ? `<div class="small" style="margin:-8px 0 16px;">另有 ${overviewRecovered} 台 VM 曾失敗、後續已恢復，列在下方明細（標示「曾失敗但已修復」）。</div>` : "";
   const overviewHtml = overviewRows ? `
-    <h3>VM Snapshot/Backup 失敗總覽</h3>
+    <h3>VM Snapshot/Backup 未修復清單</h3>
     <div class="table-scroll">
     <table style="margin-bottom:16px;">
       <tr><th>Client</th><th>Policy</th><th>Snapshot 後續</th><th>Backup 後續</th></tr>
       ${overviewRows}
     </table>
-    </div>` : "";
+    </div>${recoveredNote}` : (overviewRecovered ? `<h3>VM Snapshot/Backup 未修復清單</h3><div class="small" style="margin-bottom:16px;">無。${overviewRecovered} 台 VM 曾失敗、後續都已恢復，列在下方明細。</div>` : "");
   document.getElementById("detailBox").innerHTML = overviewHtml + dhtml;
 }
 
