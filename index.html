@@ -57,7 +57,7 @@
 
 <header>
   <h1>NBU 每日備份回報 分析工具</h1>
-  <p style="font-size:14px;opacity:.7;">版本 2026-11-03（失敗總覽只列未修復）</p>
+  <p style="font-size:14px;opacity:.7;">版本 2026-11-03（失敗總覽標示後續結果）</p>
 </header>
 
 <div class="wrap">
@@ -705,8 +705,7 @@ function analyze(){
 
   // detail groups (collapsible)
   document.getElementById("detailCard").style.display="";
-  let overviewRows = "";
-  let overviewRecovered = 0;
+  const overviewBad = [], overviewOk = [];
   let dhtml = "";
   const groupEntries = [];
   let gi=0;
@@ -726,19 +725,12 @@ function analyze(){
 
     // VM 類（有 Snapshot 作業）的失敗：未修復的列入總覽，已修復的只計數
     const isVM = list.some(r=>r.jobtype==="Snapshot") && (lastFail.jobtype==="Snapshot" || lastFail.jobtype==="Backup");
-    if(isVM && !isUnresolved){
-      overviewRecovered++;
-    } else if(isVM){
-      const afterFail = laterThan(list, lastFail);
-      const snaps = afterFail.filter(r=>r.jobtype==="Snapshot");
-      const backups = afterFail.filter(r=>r.jobtype==="Backup");
-      const lastSnap = snaps.length ? snaps[snaps.length-1] : null;
-      const lastBackup = backups.length ? backups[backups.length-1] : null;
-      const snapOk = lastSnap ? isSuccess(lastSnap.status) : null;
-      const backupOk = lastBackup ? isSuccess(lastBackup.status) : null;
-      const snapCell = snapOk===null ? '<span class="small">無後續紀錄</span>' : (snapOk? '<span style="color:var(--ok)">成功</span>' : '<span style="color:var(--bad)">失敗</span>');
-      const backupCell = backupOk===null ? '<span class="small">無後續紀錄</span>' : (backupOk? '<span style="color:var(--ok)">成功</span>' : '<span style="color:var(--bad)">失敗</span>');
-      overviewRows += `<tr><td>${clientLabel(client)}</td><td>${esc(policy)}</td><td>${snapCell}</td><td>${backupCell}</td></tr>`;
+    if(isVM){
+      const ok = recoveryOf(list, lastFail);
+      const failCell = `${esc(lastFail.startRaw)}<br><span class="small">Error ${esc(lastFail.errcode||"?")}${err? "："+esc(err.short):""}</span>`;
+      const afterCell = ok ? `<span style="color:var(--ok)">✅ ${esc(ok.startRaw)} 已成功</span>`
+                           : `<span style="color:var(--bad)">❌ 無後續成功紀錄</span>`;
+      (ok ? overviewOk : overviewBad).push(`<tr><td>${clientLabel(client)}</td><td>${esc(policy)}</td><td>${failCell}</td><td>${afterCell}</td></tr>`);
     }
 
     const distinctCodes = [...new Set(failRows.map(r=>r.errcode).filter(c=>c))];
@@ -801,15 +793,16 @@ function analyze(){
   if(shownGroups===0){
     dhtml = '<div class="empty">N/A</div>';
   }
-  const recoveredNote = overviewRecovered ? `<div class="small" style="margin:-8px 0 16px;">另有 ${overviewRecovered} 台 VM 曾失敗、後續已恢復，列在下方明細（標示「曾失敗但已修復」）。</div>` : "";
+  // ❌ 排前面、✅ 排後面
+  const overviewRows = overviewBad.concat(overviewOk).join("");
   const overviewHtml = overviewRows ? `
-    <h3>VM Snapshot/Backup 未修復清單</h3>
+    <h3>VM Snapshot/Backup 失敗總覽</h3>
     <div class="table-scroll">
     <table style="margin-bottom:16px;">
-      <tr><th>Client</th><th>Policy</th><th>Snapshot 後續</th><th>Backup 後續</th></tr>
+      <tr><th>Client</th><th>Policy</th><th>失敗</th><th>後續</th></tr>
       ${overviewRows}
     </table>
-    </div>${recoveredNote}` : (overviewRecovered ? `<h3>VM Snapshot/Backup 未修復清單</h3><div class="small" style="margin-bottom:16px;">無。${overviewRecovered} 台 VM 曾失敗、後續都已恢復，列在下方明細。</div>` : "");
+    </div>` : "";
   document.getElementById("detailBox").innerHTML = overviewHtml + dhtml;
 }
 
