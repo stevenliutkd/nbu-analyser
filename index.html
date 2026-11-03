@@ -36,6 +36,12 @@
   .group-head:hover{background:#333c54;}
   .group-body{padding:0 16px 16px;display:none;max-width:100%;}
   .group-body.open{display:block;}
+  tr.sum-row{cursor:pointer;}
+  tr.sum-row:hover{background:var(--panel2);}
+  tr.sum-row .arrow{color:var(--sub);display:inline-block;width:1.2em;}
+  tr.detail-row{display:none;}
+  tr.detail-row.open{display:table-row;}
+  tr.detail-row > td{background:var(--panel2);padding:4px 16px 16px;}
   .table-scroll{max-width:100%; overflow-x:auto;}
   table{width:100%;border-collapse:collapse;font-size:17px;margin-top:8px;table-layout:fixed;}
   th,td{padding:8px 10px;border-bottom:1px solid var(--border);text-align:left;white-space:normal;word-break:break-word;}
@@ -57,7 +63,7 @@
 
 <header>
   <h1>NBU 每日備份回報 分析工具</h1>
-  <p style="font-size:14px;opacity:.7;">版本 2026-11-03（失敗總覽標示後續結果）</p>
+  <p style="font-size:14px;opacity:.7;">版本 2026-11-03（總覽與明細合併）</p>
 </header>
 
 <div class="wrap">
@@ -705,7 +711,6 @@ function analyze(){
 
   // detail groups (collapsible)
   document.getElementById("detailCard").style.display="";
-  const overviewBad = [], overviewOk = [];
   let dhtml = "";
   const groupEntries = [];
   let gi=0;
@@ -717,21 +722,14 @@ function analyze(){
     const failRows = list.filter(r=>isFailLike(r.status));
     if(failRows.length===0) continue; // 全部成功的 policy 不顯示
     shownGroups++;
-    const tagCls = needCheck.some(n=>n.key===key)? "bad":"warn";
-    const tagTxt = needCheck.some(n=>n.key===key)? "未修復":"曾失敗但已修復（後續有成功紀錄）";
     const lastFail = failRows[failRows.length-1];
     const err = ERR_CODES[lastFail.errcode];
-    const isUnresolved = needCheck.some(n=>n.key===key);
 
-    // VM 類（有 Snapshot 作業）的失敗：未修復的列入總覽，已修復的只計數
-    const isVM = list.some(r=>r.jobtype==="Snapshot") && (lastFail.jobtype==="Snapshot" || lastFail.jobtype==="Backup");
-    if(isVM){
-      const ok = recoveryOf(list, lastFail);
-      const failCell = `${esc(lastFail.startRaw)}<br><span class="small">Error ${esc(lastFail.errcode||"?")}${err? "："+esc(err.short):""}</span>`;
-      const afterCell = ok ? `<span style="color:var(--ok)">✅ ${esc(ok.startRaw)} 已成功</span>`
-                           : `<span style="color:var(--bad)">❌ 無後續成功紀錄</span>`;
-      (ok ? overviewOk : overviewBad).push(`<tr><td>${clientLabel(client)}</td><td>${esc(policy)}</td><td>${failCell}</td><td>${afterCell}</td></tr>`);
-    }
+    const ok = recoveryOf(list, lastFail);
+    const failCell = `${esc(lastFail.startRaw)}<br><span class="small">Error ${esc(lastFail.errcode||"?")}${err? "："+esc(err.short):""}</span>`
+      + (failRows.length>1 ? `<br><span class="small">共 ${failRows.length} 筆失敗</span>` : "");
+    const afterCell = ok ? `<span style="color:var(--ok)">✅ ${esc(ok.startRaw)} 已成功</span>`
+                         : `<span style="color:var(--bad)">❌ 無後續成功紀錄</span>`;
 
     const distinctCodes = [...new Set(failRows.map(r=>r.errcode).filter(c=>c))];
     const codeBadges = distinctCodes.map(c=>{
@@ -768,12 +766,12 @@ function analyze(){
           ${lastFail.jobtype==="Snapshot" ? renderRelatedBackupCheck(list, lastFail, client, policy) : recoveryHtml}
           ${parentHtml}
         </div>`;
-    groupEntries.push({unresolved: isUnresolved, html: `<div class="group">
-      <div class="group-head" onclick="toggleGroup(${gi})">
-        <span>${clientLabel(client)} / ${esc(policy)}</span>
-        <span><span class="tag ${tagCls}">${tagTxt}</span> ${codeBadges} <span class="small">共 ${failRows.length} 筆失敗 / 全部 ${list.length} 筆</span></span>
-      </div>
-      <div class="group-body" id="gbody${gi}">
+    groupEntries.push({unresolved: !ok, html: `
+      <tr class="sum-row" onclick="toggleGroup(${gi})">
+        <td><span class="arrow" id="garrow${gi}">▸</span>${clientLabel(client)}</td>
+        <td>${esc(policy)}</td><td>${failCell}</td><td>${afterCell}</td>
+      </tr>
+      <tr class="detail-row" id="gbody${gi}"><td colspan="4">
         <div class="table-scroll">
         <table>
           <tr><th>狀態</th><th>類型</th><th>Level</th><th>Schedule</th><th>開始時間</th><th>Error Code</th></tr>
@@ -785,25 +783,18 @@ function analyze(){
         </table>
         </div>
         ${footerHtml}
-      </div>
-    </div>`});
+      </td></tr>`});
   }
-  // 未修復的排前面，已修復的排後面（同類內維持原順序）
-  dhtml = groupEntries.filter(e=>e.unresolved).concat(groupEntries.filter(e=>!e.unresolved)).map(e=>e.html).join("");
-  if(shownGroups===0){
-    dhtml = '<div class="empty">N/A</div>';
-  }
-  // ❌ 排前面、✅ 排後面
-  const overviewRows = overviewBad.concat(overviewOk).join("");
-  const overviewHtml = overviewRows ? `
-    <h3>VM Snapshot/Backup 失敗總覽</h3>
+  // ❌ 排前面、✅ 排後面（同類內維持原順序）
+  const rowsHtml = groupEntries.filter(e=>e.unresolved).concat(groupEntries.filter(e=>!e.unresolved)).map(e=>e.html).join("");
+  dhtml = shownGroups===0 ? '<div class="empty">N/A</div>' : `
     <div class="table-scroll">
-    <table style="margin-bottom:16px;">
+    <table>
       <tr><th>Client</th><th>Policy</th><th>失敗</th><th>後續</th></tr>
-      ${overviewRows}
+      ${rowsHtml}
     </table>
-    </div>` : "";
-  document.getElementById("detailBox").innerHTML = overviewHtml + dhtml;
+    </div>`;
+  document.getElementById("detailBox").innerHTML = dhtml;
 }
 
 
@@ -816,8 +807,9 @@ function toggleErrRef(){
 }
 
 function toggleGroup(i){
-  const el = document.getElementById("gbody"+i);
-  el.classList.toggle("open");
+  const open = document.getElementById("gbody"+i).classList.toggle("open");
+  const a = document.getElementById("garrow"+i);
+  if(a) a.textContent = open ? "▾" : "▸";
 }
 
 loadMap();
