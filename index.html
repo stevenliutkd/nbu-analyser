@@ -63,7 +63,7 @@
 
 <header>
   <h1>NBU 每日備份回報 分析工具</h1>
-  <p style="font-size:14px;opacity:.7;">版本 2026-11-03（總覽與明細合併）</p>
+  <p style="font-size:14px;opacity:.7;">版本 2026-11-06（桌面開啟也能讀雲端對照表）</p>
 </header>
 
 <div class="wrap">
@@ -294,17 +294,46 @@ function sheetRowsToMap(rows){
   return {map, n};
 }
 
+// 直接從桌面開 .html（file://）時，瀏覽器的 fetch 會被 Google 擋（跨來源），
+// 改用 <script> 載入 gviz 的 JSONP 版本，這條路不受跨來源限制。
+function loadSheetJsonp(csvUrl){
+  return new Promise((resolve, reject)=>{
+    if(!/\/gviz\/tq\?/.test(csvUrl)) return reject(new Error("此連結格式無法在本機檔案模式讀取"));
+    const cb = "__sheetCb" + Date.now();
+    const sc = document.createElement("script");
+    const done = ()=>{ delete window[cb]; sc.remove(); clearTimeout(t); };
+    const t = setTimeout(()=>{ done(); reject(new Error("逾時")); }, 15000);
+    window[cb] = d=>{
+      done();
+      if(!d || d.status!=="ok" || !d.table) return reject(new Error("試算表沒有開放「知道連結的任何人可檢視」"));
+      const rows = d.table.rows.map(r=>(r.c||[]).map(c=> c==null ? "" : String(c.f ?? c.v ?? "")));
+      const labels = d.table.cols.map(c=>c.label||"");
+      if(labels.some(x=>x)) rows.unshift(labels);
+      resolve(rows);
+    };
+    sc.onerror = ()=>{ done(); reject(new Error("無法連線到 Google 試算表")); };
+    sc.src = csvUrl.replace("tqx=out:csv", "tqx=responseHandler:" + cb) + "&_=" + Date.now();
+    document.head.appendChild(sc);
+  });
+}
+
 async function loadSheet(){
   const el = document.getElementById("sheetStat");
   const url = sheetCsvUrl(SHEET_URL);
   if(!url){ if(el) el.textContent = ""; return; }
   if(el){ el.style.color = ""; el.textContent = "雲端對照表讀取中..."; }
   try{
-    const res = await fetch(url + (url.includes("?")?"&":"?") + "_=" + Date.now(), {cache:"no-store"});
-    if(!res.ok) throw new Error("HTTP " + res.status);
-    const text = await res.text();
-    if(/^\s*<(!doctype|html)/i.test(text)) throw new Error("試算表沒有開放「知道連結的任何人可檢視」");
-    const {map, n} = sheetRowsToMap(parseCsv(text));
+    let rows;
+    try{
+      const res = await fetch(url + (url.includes("?")?"&":"?") + "_=" + Date.now(), {cache:"no-store"});
+      if(!res.ok) throw new Error("HTTP " + res.status);
+      const text = await res.text();
+      if(/^\s*<(!doctype|html)/i.test(text)) throw new Error("試算表沒有開放「知道連結的任何人可檢視」");
+      rows = parseCsv(text);
+    }catch(fetchErr){
+      rows = await loadSheetJsonp(url);   // 本機檔案模式走這條
+    }
+    const {map, n} = sheetRowsToMap(rows);
     if(n===0) throw new Error("表格裡沒有讀到任何「VM名稱 + UUID」");
     sheetMap = map;
     try{ localStorage.setItem(SHEET_CACHE_KEY, JSON.stringify({time:Date.now(), map})); }catch(e){}
